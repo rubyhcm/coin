@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: coinpredict-watch
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # $7/tháng — worker không có free tier
+    region: singapore      # gần Việt Nam nhất
+    envVars:
+      - key: LLM_API_KEY
+        sync: false        # điền thủ công trên Render Dashboard
+      - key: LLM_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: LLM_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b:free
+      - key: TWELVEDATA_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
