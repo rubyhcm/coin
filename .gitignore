@@ -1,0 +1,10 @@
+# Dependencies
+.env
+
+# Binaries
+/coinpredict
+/coin
+*.exe
+
+# OS files
+.DS_Store
