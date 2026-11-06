@@ -20,7 +20,7 @@ type LLMClient struct {
 func NewLLMClient(cfg Config) *LLMClient {
 	return &LLMClient{
 		cfg: cfg,
-		httpCli: &http.Client{Timeout: 60 * time.Second},
+		httpCli: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -40,7 +40,11 @@ type chatMessage struct {
 // chatResponse is a minimal subset of the OpenAI chat completion response.
 type chatResponse struct {
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message struct {
+			Content  *string `json:"content"`   // nil for reasoning-only models
+			Reasoning string  `json:"reasoning"` // populated by reasoning models (e.g. Nemotron)
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 }
 
@@ -53,9 +57,11 @@ func (c *LLMClient) Predict(history []PriceRecord) (PredictionResult, error) {
 		Messages: []chatMessage{
 			{
 				Role: "system",
-				Content: "You are a financial market analyst specializing in gold (XAU/USD) price analysis. " +
-					"Analyze the provided historical price data and predict the likely direction and price " +
-					"for the next period. Always respond with valid JSON only, no markdown formatting.",
+				Content: "You are an expert gold (XAU/USD) trading analyst. " +
+					"Analyze the provided OHLC candlestick data and return a structured trade recommendation. " +
+					"Identify trend direction, key support/resistance levels, and provide a concrete trade setup " +
+					"with entry price, stop loss, and two take profit targets based on technical analysis. " +
+					"Always respond with valid JSON only, no markdown formatting.",
 			},
 			{
 				Role:    "user",
@@ -120,7 +126,16 @@ func (c *LLMClient) Predict(history []PriceRecord) (PredictionResult, error) {
 			return PredictionResult{}, fmt.Errorf("no choices in API response")
 		}
 
-		content := chatResp.Choices[0].Message.Content
+		content := ""
+		if chatResp.Choices[0].Message.Content != nil {
+			content = *chatResp.Choices[0].Message.Content
+		}
+
+		// Reasoning models (e.g. Nemotron) put their output inside the reasoning
+		// field and leave content null. Extract the JSON block from reasoning.
+		if strings.TrimSpace(content) == "" && chatResp.Choices[0].Message.Reasoning != "" {
+			content = extractJSONFromReasoning(chatResp.Choices[0].Message.Reasoning)
+		}
 
 		// The LLM may wrap JSON in code fences; strip them.
 		content = stripCodeFences(content)
@@ -134,6 +149,12 @@ func (c *LLMClient) Predict(history []PriceRecord) (PredictionResult, error) {
 		var result PredictionResult
 		if err := json.Unmarshal([]byte(content), &result); err != nil {
 			return PredictionResult{}, fmt.Errorf("parsing prediction JSON (raw: %s): %w", content, err)
+		}
+
+		// Fallback: if model didn't return trade_setup, derive it from key_levels
+		if result.TradeSetup.Type == "" && result.KeyLevels.Support > 0 && result.KeyLevels.Resistance > 0 {
+			result.TradeSetup = deriveTradeSetup(result.Direction, result.PredictedPrice,
+				result.KeyLevels.Support, result.KeyLevels.Resistance)
 		}
 
 		return result, nil
@@ -150,17 +171,34 @@ func buildPrompt(history []PriceRecord) string {
 		history = history[len(history)-maxCandles:]
 	}
 
+	// Current price = last close
+	lastClose := history[len(history)-1].Close
+
 	var sb strings.Builder
-	sb.WriteString("Analyze the following GOLD/USD historical price data and predict the next period's price movement.\n\n")
-	sb.WriteString("Historical data (most recent last):\n\n")
+	sb.WriteString("Analyze the following XAU/USD candlestick data and provide a trade recommendation.\n\n")
+	sb.WriteString("OHLC data (most recent last):\n\n")
 	sb.WriteString("| Date                | Open    | High    | Low     | Close   |\n")
 	sb.WriteString("|---------------------|---------|---------|---------|---------|\n")
 	for _, r := range history {
-		sb.WriteString(fmt.Sprintf("| %-19s | %.2f | %.2f | %.2f | %.2f |\n", r.Date, r.Open, r.High, r.Low, r.Close))
+		sb.WriteString(fmt.Sprintf("| %-19s | %.2f | %.2f | %.2f | %.2f |\n",
+			r.Date, r.Open, r.High, r.Low, r.Close))
 	}
-	sb.WriteString("\n")
-	sb.WriteString("Respond with ONLY a JSON object, no markdown, no extra text:\n")
-	sb.WriteString(`{"direction":"up"|"down"|"sideways","confidence":<0.0-1.0>,"predicted_price":<number>,"reasoning":"<brief>","key_levels":{"support":<number>,"resistance":<number>}}`)
+	sb.WriteString(fmt.Sprintf("\nCurrent price: %.2f USD\n\n", lastClose))
+	sb.WriteString("Respond with ONLY this JSON, no markdown, no extra text:\n")
+	sb.WriteString(`{`)
+	sb.WriteString(`"direction":"up"|"down"|"sideways",`)
+	sb.WriteString(`"confidence":<0.0-1.0>,`)
+	sb.WriteString(`"predicted_price":<next period close>,`)
+	sb.WriteString(`"reasoning":"<2-3 sentences citing trend, S/R, momentum>",`)
+	sb.WriteString(`"key_levels":{"support":<number>,"resistance":<number>},`)
+	sb.WriteString(`"trade_setup":{`)
+	sb.WriteString(`"type":"BUY"|"SELL"|"WAIT",`)
+	sb.WriteString(`"entry":<best entry price>,`)
+	sb.WriteString(`"stop_loss":<stop loss price beyond nearest S/R>,`)
+	sb.WriteString(`"take_profit_1":<conservative TP at nearest S/R>,`)
+	sb.WriteString(`"take_profit_2":<extended TP at next S/R>,`)
+	sb.WriteString(`"risk_reward":<R:R ratio to TP1 as decimal e.g. 2.0>`)
+	sb.WriteString(`}}`)
 
 	return sb.String()
 }
@@ -178,4 +216,86 @@ func stripCodeFences(s string) string {
 		s = strings.TrimSpace(s)
 	}
 	return s
+}
+
+// deriveTradeSetup calculates a basic trade setup from direction and key levels
+// when the model did not return a trade_setup block.
+func deriveTradeSetup(direction string, predictedPrice, support, resistance float64) struct {
+	Type        string  `json:"type"`
+	Entry       float64 `json:"entry"`
+	StopLoss    float64 `json:"stop_loss"`
+	TakeProfit1 float64 `json:"take_profit_1"`
+	TakeProfit2 float64 `json:"take_profit_2"`
+	RiskReward  float64 `json:"risk_reward"`
+} {
+	type ts = struct {
+		Type        string  `json:"type"`
+		Entry       float64 `json:"entry"`
+		StopLoss    float64 `json:"stop_loss"`
+		TakeProfit1 float64 `json:"take_profit_1"`
+		TakeProfit2 float64 `json:"take_profit_2"`
+		RiskReward  float64 `json:"risk_reward"`
+	}
+	spread := 0.30 // typical XAU/USD spread buffer
+
+	switch direction {
+	case "up":
+		entry := support + spread
+		sl := support - (resistance-support)*0.3
+		tp1 := resistance - spread
+		tp2 := resistance + (resistance-support)*0.5
+		rr := 0.0
+		if entry-sl > 0 {
+			rr = (tp1 - entry) / (entry - sl)
+		}
+		return ts{"BUY", entry, sl, tp1, tp2, rr}
+	case "down":
+		entry := resistance - spread
+		sl := resistance + (resistance-support)*0.3
+		tp1 := support + spread
+		tp2 := support - (resistance-support)*0.5
+		rr := 0.0
+		if sl-entry > 0 {
+			rr = (entry - tp1) / (sl - entry)
+		}
+		return ts{"SELL", entry, sl, tp1, tp2, rr}
+	default:
+		return ts{Type: "WAIT"}
+	}
+}
+
+// extractJSONFromReasoning finds the last complete JSON object {...} in a reasoning
+// block. Reasoning models often finish their thinking with the actual JSON answer.
+func extractJSONFromReasoning(reasoning string) string {
+	// Find the last '{' that starts a complete JSON object
+	lastOpen := strings.LastIndex(reasoning, "{")
+	if lastOpen == -1 {
+		return ""
+	}
+
+	// Find matching closing brace by counting depth
+	depth := 0
+	for i := lastOpen; i < len(reasoning); i++ {
+		switch reasoning[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := strings.TrimSpace(reasoning[lastOpen : i+1])
+				// Quick sanity check: must have at least "direction" key
+				if strings.Contains(candidate, "direction") {
+					return candidate
+				}
+				// Not the right block — keep searching backwards
+				lastOpen = strings.LastIndex(reasoning[:lastOpen], "{")
+				if lastOpen == -1 {
+					return ""
+				}
+				i = lastOpen - 1
+				depth = 0
+			}
+		}
+	}
+	return ""
 }

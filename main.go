@@ -71,14 +71,22 @@ type PriceRecord struct {
 
 // PredictionResult is the structured response we expect from the LLM.
 type PredictionResult struct {
-	Direction       string  `json:"direction"`        // "up", "down", or "sideways"
-	Confidence      float64 `json:"confidence"`       // 0.0 - 1.0
-	PredictedPrice  float64 `json:"predicted_price"`  // estimated next-period price
-	Reasoning       string  `json:"reasoning"`        // explanation of the analysis
-	KeyLevels        struct {
-		Support float64 `json:"support"`
+	Direction      string  `json:"direction"`       // "up", "down", or "sideways"
+	Confidence     float64 `json:"confidence"`      // 0.0 - 1.0
+	PredictedPrice float64 `json:"predicted_price"` // estimated next-period close price
+	Reasoning      string  `json:"reasoning"`       // explanation of the analysis
+	KeyLevels      struct {
+		Support    float64 `json:"support"`
 		Resistance float64 `json:"resistance"`
 	} `json:"key_levels"`
+	TradeSetup struct {
+		Type       string  `json:"type"`        // "BUY", "SELL", or "WAIT"
+		Entry      float64 `json:"entry"`       // suggested entry price
+		StopLoss   float64 `json:"stop_loss"`   // stop loss price
+		TakeProfit1 float64 `json:"take_profit_1"` // first TP (conservative)
+		TakeProfit2 float64 `json:"take_profit_2"` // second TP (extended)
+		RiskReward float64 `json:"risk_reward"` // R:R ratio to TP1
+	} `json:"trade_setup"`
 }
 
 func main() {
@@ -181,8 +189,25 @@ func printPrediction(r PredictionResult) {
 	fmt.Printf("Confidence       : %.0f%%\n", r.Confidence*100)
 	fmt.Printf("Predicted Price  : %.2f USD\n", r.PredictedPrice)
 	fmt.Printf("Support Level    : %.2f USD\n", r.KeyLevels.Support)
-	fmt.Printf("Resistance Level  : %.2f USD\n", r.KeyLevels.Resistance)
-	fmt.Println("──────────────────────────────────────────────")
+	fmt.Printf("Resistance Level : %.2f USD\n", r.KeyLevels.Resistance)
+
+	ts := r.TradeSetup
+	if ts.Type != "" && ts.Type != "WAIT" {
+		fmt.Println("────────────────────────────────────────────")
+		fmt.Printf("Trade Setup      : %s\n", ts.Type)
+		fmt.Printf("Entry            : %.2f USD\n", ts.Entry)
+		fmt.Printf("Stop Loss        : %.2f USD\n", ts.StopLoss)
+		fmt.Printf("Take Profit 1    : %.2f USD\n", ts.TakeProfit1)
+		fmt.Printf("Take Profit 2    : %.2f USD\n", ts.TakeProfit2)
+		if ts.RiskReward > 0 {
+			fmt.Printf("Risk/Reward      : 1 : %.2f\n", ts.RiskReward)
+		}
+	} else if ts.Type == "WAIT" {
+		fmt.Println("────────────────────────────────────────────")
+		fmt.Println("Trade Setup      : WAIT — không vào lệnh lúc này")
+	}
+
+	fmt.Println("────────────────────────────────────────────")
 	fmt.Println("Analysis:")
 	fmt.Println(r.Reasoning)
 	fmt.Println("════════════════════════════════════════════")

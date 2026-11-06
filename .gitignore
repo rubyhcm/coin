@@ -1,10 +1,13 @@
-# Dependencies
+# Secrets
 .env
 
 # Binaries
 /coinpredict
 /coin
 *.exe
+
+# Generated chart output
+*.html
 
 # OS files
 .DS_Store
