@@ -4,7 +4,7 @@
 
 - Go 1.21+
 - Kết nối internet
-- API key LLM (OpenAI, Groq, OpenRouter, Ollama, v.v.)
+- Ít nhất 1 API key LLM (OpenRouter, Groq, Gemini, hoặc bất kỳ provider tương thích OpenAI)
 - API key Twelve Data (chỉ cần cho `-history`) — miễn phí
 - Telegram Bot Token + Chat ID (chỉ cần cho `-watch`) — miễn phí
 
@@ -26,10 +26,15 @@ App tự đọc file `.env` khi khởi động — không cần `source .env`.
 Shell environment luôn được ưu tiên hơn (không bị overwrite).
 
 ```env
-# === LLM (bắt buộc) ===
-LLM_API_KEY=sk-...
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o-mini
+# === LLM mặc định (dùng khi không truyền -provider) ===
+LLM_API_KEY=sk-or-...
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+
+# === Per-provider keys (auto fallback: openrouter → groq → gemini) ===
+OPENROUTER_API_KEY=sk-or-...
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=AIza...
 
 # === Dữ liệu lịch sử (chỉ cần cho -history) ===
 TWELVEDATA_API_KEY=...       # miễn phí tại https://twelvedata.com/pricing
@@ -39,28 +44,41 @@ TELEGRAM_BOT_TOKEN=...       # lấy từ @BotFather
 TELEGRAM_CHAT_ID=...         # lấy từ @userinfobot
 ```
 
-### Ví dụ theo nhà cung cấp LLM
+### Provider presets (base URL + model đã cấu hình sẵn)
 
-**OpenRouter — model free (khuyên dùng):**
-```env
-LLM_API_KEY=sk-or-...
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
-```
+| Provider | Base URL | Model mặc định |
+|---|---|---|
+| `openrouter` | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3-ultra-550b-a55b:free` |
+| `groq` | `https://api.groq.com/openai/v1` | `qwen/qwen3.8-27b` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
 
-**Groq (nhanh, free tier):**
-```env
-LLM_API_KEY=gsk_...
-LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_MODEL=llama-3.3-70b-versatile
-```
+Chỉ cần điền key — base URL và model đã được code tự chọn theo provider.
 
-**Ollama (local, không cần internet cho LLM):**
+### Custom provider (Ollama, Together AI, v.v.)
+
 ```env
 LLM_API_KEY=ollama
 LLM_BASE_URL=http://localhost:11434/v1
 LLM_MODEL=llama3.1
 ```
+
+---
+
+## Auto fallback giữa các provider
+
+Khi một provider gặp lỗi (rate limit, quota hết, timeout), app **tự động** chuyển sang provider tiếp theo:
+
+```
+openrouter → groq → gemini
+```
+
+Terminal báo rõ:
+```
+⚠  Provider nvidia/nemotron-3-ultra-550b-a55b:free failed: 429 rate limit — trying next...
+✓ Model used: qwen/qwen3.8-27b
+```
+
+Providers không có key sẽ bị bỏ qua tự động.
 
 ---
 
@@ -82,6 +100,9 @@ Lấy nến OHLC lịch sử XAU/USD từ Twelve Data + tự động ghép nến
 
 # 50 nến 30 phút, lưu biểu đồ tên riêng
 ./coinpredict -history -history-size 50 -history-interval 30min -chart -chart-out gold_30m.html
+
+# Bắt đầu từ Groq, fallback sang các provider khác nếu lỗi
+./coinpredict -history -provider groq
 ```
 
 | Flag | Mặc định | Mô tả |
@@ -99,14 +120,14 @@ Lấy nến OHLC lịch sử XAU/USD từ Twelve Data + tự động ghép nến
 
 ### 2. Chế độ watch — Telegram bot (`-watch`)
 
-Phân tích tự động định kỳ và gửi kết quả lên Telegram. Chỉ gửi khi độ tin cậy đạt ngưỡng tối thiểu.
+Phân tích tự động định kỳ và gửi kết quả lên Telegram. Chỉ gửi khi độ tin cậy đạt ngưỡng tối thiểu. Tự động fallback provider nếu lỗi.
 
 ```bash
 # Mỗi 3 phút, gửi khi tin cậy ≥ 75% (mặc định)
 ./coinpredict -watch
 
-# Mỗi 5 phút, ngưỡng 80%
-./coinpredict -watch -watch-interval 5m -min-confidence 0.8
+# Mỗi 5 phút, ngưỡng 80%, bắt đầu từ Groq
+./coinpredict -watch -watch-interval 5m -min-confidence 0.8 -provider groq
 
 # Tùy chỉnh đầy đủ
 ./coinpredict -watch -history-size 50 -history-interval 15min -watch-interval 3m -min-confidence 0.75
@@ -180,24 +201,37 @@ Biểu đồ bao gồm:
 
 ---
 
+## Chọn provider thủ công
+
+```bash
+# Bắt đầu từ provider cụ thể (vẫn fallback sang cái khác nếu lỗi)
+./coinpredict -history -provider openrouter
+./coinpredict -history -provider groq
+./coinpredict -history -provider gemini
+```
+
+---
+
 ## Kết quả dự đoán
 
 ```
+✓ Model used: qwen/qwen3.8-27b
+
 ════════════════════════════════════════════
        GOLD/USD PRICE PREDICTION
 ════════════════════════════════════════════
 Direction        : DOWN
-Confidence       : 65%
+Confidence       : 75%
 Predicted Price  : 4045.00 USD
-Support Level    : 4037.00 USD
-Resistance Level : 4050.50 USD
+Support Level    : 4040.00 USD
+Resistance Level : 4060.00 USD
 ────────────────────────────────────────────
 Trade Setup      : SELL
-Entry            : 4049.50 USD
-Stop Loss        : 4052.50 USD
-Take Profit 1    : 4042.00 USD
-Take Profit 2    : 4037.00 USD
-Risk/Reward      : 1 : 2.50
+Entry            : 4050.90 USD
+Stop Loss        : 4062.00 USD
+Take Profit 1    : 4040.00 USD
+Take Profit 2    : 4030.00 USD
+Risk/Reward      : 1 : 0.98
 ────────────────────────────────────────────
 Analysis:
 Price collapsed from 4106 to 4036...
@@ -228,6 +262,9 @@ Price collapsed from 4106 to 4036...
 # Chỉ xem dự đoán + trade setup, không mở browser
 ./coinpredict -history -history-size 100 -history-interval 15min
 
+# Dùng Groq trước, fallback tự động
+./coinpredict -history -provider groq
+
 # Chạy bot Telegram tự động mỗi 3 phút
 ./coinpredict -watch -history-size 50 -history-interval 15min
 
@@ -241,11 +278,13 @@ Price collapsed from 4106 to 4036...
 
 | Lỗi | Nguyên nhân | Cách xử lý |
 |---|---|---|
-| `LLM_API_KEY not set` | Chưa có `.env` hoặc thiếu key | Tạo `.env` từ `.env.example` |
+| `No LLM provider configured` | Không có key nào trong `.env` | Điền ít nhất một trong: `LLM_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY` |
+| `all providers failed` | Cả 3 provider đều lỗi | Kiểm tra key, kết nối internet, hoặc chờ rate limit reset |
+| `empty response from model` | Model free hết token | Tự động retry, hoặc giảm `-history-size` |
+| `429 rate-limited` | Hết quota ngày | Fallback tự động sang provider khác |
+| `model not found` | Model đã bị xóa/đổi tên | Cập nhật model trong `providerPresets` trong `main.go` |
 | `TWELVEDATA_API_KEY not set` | Thiếu key Twelve Data | Đăng ký miễn phí tại twelvedata.com |
 | `TELEGRAM_BOT_TOKEN ... must be set` | Thiếu config Telegram | Điền `TELEGRAM_BOT_TOKEN` và `TELEGRAM_CHAT_ID` vào `.env` |
-| `empty response from model` | Model free hết token | Đổi model hoặc giảm `-history-size` |
-| `429 rate-limited upstream` | Model Google/shared bị giới hạn | Chờ vài phút hoặc đổi sang `nvidia/nemotron-3-ultra-550b-a55b:free` |
 | `Twelve Data error` | Key sai, hết 800 credit/ngày | Kiểm tra key, chờ reset 00:00 UTC |
 
 ---

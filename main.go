@@ -59,6 +59,89 @@ func LoadConfig() Config {
 	}
 }
 
+// providerPresets maps provider name → (baseURL, model, envKeyName).
+// envKeyName is the env var that holds the API key for that provider.
+var providerPresets = map[string][3]string{
+	"openrouter": {
+		"https://openrouter.ai/api/v1",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
+		"OPENROUTER_API_KEY",
+	},
+	"groq": {
+		"https://api.groq.com/openai/v1",
+		"qwen/qwen3.8-27b",
+		"GROQ_API_KEY",
+	},
+	"gemini": {
+		"https://generativelanguage.googleapis.com/v1beta/openai/",
+		"gemini-2.5-flash",
+		"GEMINI_API_KEY",
+	},
+}
+
+// applyProvider overrides cfg with preset values for the given provider name.
+// The provider-specific API key env var takes precedence over LLM_API_KEY.
+func applyProvider(cfg Config, provider string) Config {
+	preset, ok := providerPresets[strings.ToLower(provider)]
+	if !ok {
+		log.Fatalf("Unknown provider %q. Available: openrouter, groq, gemini", provider)
+	}
+	cfg.BaseURL = preset[0]
+	cfg.Model = preset[1]
+	// Use provider-specific key if set, otherwise fall back to LLM_API_KEY
+	if key := os.Getenv(preset[2]); key != "" {
+		cfg.APIKey = key
+	}
+	return cfg
+}
+
+// providerOrder defines the default fallback sequence when -provider is not specified.
+// Providers without a key configured are skipped automatically.
+var providerOrder = []string{"openrouter", "groq", "gemini"}
+
+// buildFallbackChain returns an ordered list of Configs to try.
+// If -provider is set, that provider goes first, then the rest follow.
+// Providers with no API key are excluded.
+func buildFallbackChain(defaultCfg Config, firstProvider string) []Config {
+	// Build a base key from default cfg (LLM_API_KEY) for the default provider
+	var chain []Config
+
+	// Determine the ordered list: firstProvider first, then the rest
+	order := providerOrder
+	if firstProvider != "" {
+		rest := make([]string, 0, len(providerOrder))
+		for _, p := range providerOrder {
+			if strings.ToLower(p) != strings.ToLower(firstProvider) {
+				rest = append(rest, p)
+			}
+		}
+		order = append([]string{strings.ToLower(firstProvider)}, rest...)
+	}
+
+	for _, name := range order {
+		preset := providerPresets[name]
+		key := os.Getenv(preset[2])
+		if key == "" {
+			key = defaultCfg.APIKey // fallback to LLM_API_KEY
+		}
+		if key == "" {
+			continue // no key at all — skip this provider
+		}
+		chain = append(chain, Config{
+			APIKey:  key,
+			BaseURL: preset[0],
+			Model:   preset[1],
+		})
+	}
+
+	// If chain is empty or user uses custom LLM_BASE_URL, prepend the default cfg
+	if len(chain) == 0 {
+		chain = append(chain, defaultCfg)
+	}
+
+	return chain
+}
+
 // PriceRecord represents a single historical OHLC price point.
 type PriceRecord struct {
 	Date   string  `json:"date"`
@@ -108,11 +191,18 @@ func main() {
 	watchMode := flag.Bool("watch", false, "Watch mode: analyse repeatedly and send results to Telegram (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)")
 	watchInterval := flag.Duration("watch-interval", 3*time.Minute, "How often to analyse and send in watch mode (default 3m)")
 	minConfidence := flag.Float64("min-confidence", 0.75, "Minimum confidence threshold to send Telegram alert (0.0-1.0, default 0.75)")
+	provider := flag.String("provider", "", "LLM provider override: openrouter | groq | gemini (overrides LLM_BASE_URL and LLM_MODEL)")
 	flag.Parse()
 
 	cfg := LoadConfig()
-	if cfg.APIKey == "" {
-		log.Fatal("LLM_API_KEY not set. Copy .env.example to .env and fill in your API key.")
+	// Build fallback chain: -provider goes first, then the rest in order.
+	// Providers with no key are skipped automatically.
+	fallbackChain := buildFallbackChain(cfg, *provider)
+	if len(fallbackChain) == 0 {
+		log.Fatal("No LLM provider configured. Set at least one of: LLM_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, GEMINI_API_KEY")
+	}
+	if *provider != "" {
+		fmt.Printf("Provider: %s (with fallback to others if needed)\n", strings.ToUpper(*provider))
 	}
 
 	// Watch mode: run loop, send to Telegram, exit early
@@ -121,7 +211,7 @@ func main() {
 		if tgCfg.BotToken == "" || tgCfg.ChatID == "" {
 			log.Fatal("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set for -watch mode.")
 		}
-		RunWatchLoop(cfg, tgCfg, *historyInterval, *historySize, *watchInterval, *minConfidence)
+		RunWatchLoop(fallbackChain, tgCfg, *historyInterval, *historySize, *watchInterval, *minConfidence)
 		return
 	}
 
@@ -184,11 +274,11 @@ func main() {
 	fmt.Println("Analyzing with LLM...")
 	fmt.Println()
 
-	client := NewLLMClient(cfg)
-	result, err := client.Predict(history)
+	result, usedModel, err := PredictWithFallback(fallbackChain, history)
 	if err != nil {
 		log.Fatalf("Prediction failed: %v", err)
 	}
+	fmt.Printf("✓ Model used: %s\n\n", usedModel)
 
 	printPrediction(result)
 }

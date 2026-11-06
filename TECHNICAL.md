@@ -11,9 +11,9 @@ Không có Go module dependency ngoài standard library.
 ## Cấu trúc file
 
 ```
-main.go       — CLI, flags, routing chế độ, orchestration
+main.go       — CLI, flags, routing chế độ, orchestration, provider fallback
 price.go      — Lấy dữ liệu giá (gold-api.com, Twelve Data)
-llm.go        — Gọi LLM API, build prompt, parse kết quả
+llm.go        — Gọi LLM API, build prompt, parse kết quả, fallback logic
 chart.go      — Tạo file HTML biểu đồ nến MT5-style
 telegram.go   — Gửi phân tích qua Telegram Bot API
 ```
@@ -27,11 +27,12 @@ main()
  ├── loadDotEnv(".env")
  ├── parse flags
  ├── LoadConfig()               # LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+ ├── buildFallbackChain()       # xây danh sách provider theo thứ tự ưu tiên
  │
  ├── [-watch] ──────────────────────────────────────────────────────────┐
  │    └── RunWatchLoop()        # lặp vô hạn theo watchInterval         │
  │         ├── FetchHistoricalOHLC() + AppendLiveCandle()               │
- │         ├── LLMClient.Predict()                                      │
+ │         ├── PredictWithFallback()   # thử từng provider              │
  │         ├── printPrediction()                                        │
  │         └── [confidence ≥ minConfidence] → SendTelegramMessage()     │
  │                                                                      │
@@ -44,7 +45,7 @@ main()
  │
  ├── [-chart] → generateChartHTML()     # tạo HTML, mở browser
  │
- └── LLMClient.Predict() → printPrediction()
+ └── PredictWithFallback() → printPrediction()
 ```
 
 ---
@@ -59,7 +60,12 @@ main()
 | `Config` | Struct: `APIKey`, `BaseURL`, `Model` cho LLM. |
 | `PriceRecord` | Struct OHLC: `Date`, `Open`, `High`, `Low`, `Close`, `Volume`. Date kết thúc bằng `⟳` nếu là nến đang hình thành. |
 | `PredictionResult` | Struct kết quả LLM. Xem chi tiết bên dưới. |
-| `main()` | Parse flags, load data, gọi chart và LLM. |
+| `LoadConfig()` | Đọc `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` từ env. |
+| `providerPresets` | Map tên provider → `[baseURL, model, envKeyName]`. Hiện có: `openrouter`, `groq`, `gemini`. |
+| `applyProvider(cfg, name)` | Override cfg với preset của provider. Key riêng (`GROQ_API_KEY`, v.v.) được ưu tiên hơn `LLM_API_KEY`. |
+| `providerOrder` | Thứ tự fallback mặc định: `openrouter → groq → gemini`. |
+| `buildFallbackChain(cfg, firstProvider)` | Xây `[]Config` theo thứ tự ưu tiên. Provider không có key bị bỏ qua. Nếu `-provider` được chỉ định, provider đó lên đầu. |
+| `main()` | Parse flags, build fallback chain, load data, gọi chart và LLM. |
 | `printPrediction(r)` | In kết quả phân tích + trade setup ra stdout. |
 | `loadPriceData(path)` | Đọc JSON file → `[]PriceRecord`. |
 | `readPriceDataStdin()` | Đọc JSON từ stdin (chế độ `-i`). |
@@ -131,6 +137,12 @@ type PredictionResult struct {
 - Wrapper cho bất kỳ endpoint tương thích OpenAI chat completion
 - HTTP timeout: 120 giây (reasoning model cần thời gian dài)
 
+**`PredictWithFallback(configs []Config, history []PriceRecord) (PredictionResult, string, error)`**
+- Thử từng `Config` trong danh sách theo thứ tự
+- Khi một provider lỗi: in cảnh báo, thử provider tiếp theo
+- Trả về `(result, modelUsed, error)`
+- Tất cả fail → trả lỗi tổng hợp
+
 **`Predict(history []PriceRecord) (PredictionResult, error)`**
 - Gọi `buildPrompt()` → POST đến `{BaseURL}/chat/completions`
 - Temperature: `0.3`, MaxTokens: `4000`
@@ -195,9 +207,10 @@ type PredictionResult struct {
 - Định dạng HTML với emoji, bold, code blocks
 - Gồm: giá hiện tại, xu hướng, tin cậy, dự đoán, S/R, trade setup (entry/SL/TP1/TP2/R:R), phân tích
 
-**`RunWatchLoop(cfg, tgCfg, histInterval, histSize, watchInterval, minConfidence)`**
+**`RunWatchLoop(configs []Config, tgCfg TelegramConfig, histInterval string, histSize int, watchInterval time.Duration, minConfidence float64)`**
+- Nhận `[]Config` thay vì `Config` đơn — hỗ trợ auto fallback provider
 - Chạy `runOnce()` ngay lập tức, sau đó lặp theo `watchInterval`
-- `runOnce()`: fetch → live candle → predict → print → gửi Telegram nếu `confidence ≥ minConfidence`
+- `runOnce()`: fetch → live candle → `PredictWithFallback()` → print → gửi Telegram nếu `confidence ≥ minConfidence`
 - In terminal: kết quả mỗi lần; gửi Telegram: chỉ khi đạt ngưỡng
 
 **`intervalLabel(interval string) string`**
@@ -209,9 +222,12 @@ type PredictionResult struct {
 
 | Biến | Bắt buộc | Mô tả |
 |---|---|---|
-| `LLM_API_KEY` | ✅ | API key LLM |
+| `LLM_API_KEY` | ✅ (nếu không set key riêng) | API key LLM mặc định |
 | `LLM_BASE_URL` | ❌ | Base URL (mặc định: `https://api.openai.com/v1`) |
 | `LLM_MODEL` | ❌ | Tên model (mặc định: `gpt-4o-mini`) |
+| `OPENROUTER_API_KEY` | ❌ | Key riêng cho OpenRouter |
+| `GROQ_API_KEY` | ❌ | Key riêng cho Groq |
+| `GEMINI_API_KEY` | ❌ | Key riêng cho Gemini |
 | `TWELVEDATA_API_KEY` | Chỉ với `-history` / `-watch` | API key Twelve Data |
 | `TELEGRAM_BOT_TOKEN` | Chỉ với `-watch` | Token bot Telegram |
 | `TELEGRAM_CHAT_ID` | Chỉ với `-watch` | Chat ID nhận tin |
@@ -225,6 +241,7 @@ type PredictionResult struct {
 | `-history` | false | Lấy lịch sử OHLC từ Twelve Data |
 | `-history-size` | 100 | Số nến (1–5000) |
 | `-history-interval` | `15min` | Khung nến: `1min` `5min` `15min` `30min` `45min` `1h` `2h` `4h` `1day` |
+| `-provider` | — | Ưu tiên provider: `openrouter` \| `groq` \| `gemini` |
 | `-chart` | false | Tạo biểu đồ HTML MT5-style |
 | `-chart-out` | `chart.html` | Đường dẫn file biểu đồ |
 | `-watch` | false | Watch mode: lặp phân tích + Telegram |
@@ -243,6 +260,8 @@ type PredictionResult struct {
 
 | Tình huống | Xử lý |
 |---|---|
+| Provider gặp 429 / 5xx | `PredictWithFallback` tự động thử provider tiếp theo |
+| Provider không có key | Bỏ qua khi build fallback chain |
 | LLM trả `content: null` (reasoning model) | `extractJSONFromReasoning()` tìm JSON trong `reasoning` field |
 | LLM trả response rỗng | Retry 3 lần với backoff |
 | LLM trả JSON thiếu `trade_setup` | `deriveTradeSetup()` tự tính từ `key_levels` |

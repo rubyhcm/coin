@@ -24,6 +24,22 @@ func NewLLMClient(cfg Config) *LLMClient {
 	}
 }
 
+// PredictWithFallback tries each provider in order and returns the first success.
+// If a provider fails (rate limit, quota, error), it automatically switches to the next.
+func PredictWithFallback(configs []Config, history []PriceRecord) (PredictionResult, string, error) {
+	var lastErr error
+	for _, cfg := range configs {
+		client := NewLLMClient(cfg)
+		result, err := client.Predict(history)
+		if err == nil {
+			return result, cfg.Model, nil
+		}
+		fmt.Printf("⚠  Provider %s failed: %v — trying next...\n", cfg.Model, err)
+		lastErr = err
+	}
+	return PredictionResult{}, "", fmt.Errorf("all providers failed, last error: %w", lastErr)
+}
+
 // chatRequest is the OpenAI-compatible chat completion request body.
 type chatRequest struct {
 	Model       string        `json:"model"`

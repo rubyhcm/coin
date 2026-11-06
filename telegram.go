@@ -142,11 +142,10 @@ func intervalLabel(interval string) string {
 
 // RunWatchLoop fetches data + predicts + sends Telegram message every `interval`.
 // Only sends if confidence >= minConfidence. Runs until interrupted (Ctrl+C).
-func RunWatchLoop(cfg Config, tgCfg TelegramConfig, histInterval string, histSize int, watchInterval time.Duration, minConfidence float64) {
+func RunWatchLoop(configs []Config, tgCfg TelegramConfig, histInterval string, histSize int, watchInterval time.Duration, minConfidence float64) {
 	fmt.Printf("=== WATCH MODE: phân tích mỗi %v, gửi Telegram khi tin cậy ≥ %.0f%% ===\n", watchInterval, minConfidence*100)
 	fmt.Printf("    Interval nến: %s | Số nến: %d\n\n", histInterval, histSize)
 
-	client := NewLLMClient(cfg)
 	tick := time.NewTicker(watchInterval)
 	defer tick.Stop()
 
@@ -170,12 +169,13 @@ func RunWatchLoop(cfg Config, tgCfg TelegramConfig, histInterval string, histSiz
 
 		currentPrice := records[len(records)-1].Close
 
-		// Predict
-		result, err := client.Predict(records)
+		// Predict with automatic fallback
+		result, usedModel, err := PredictWithFallback(configs, records)
 		if err != nil {
 			fmt.Printf("  ❌ LLM lỗi: %v\n", err)
 			return
 		}
+		fmt.Printf("  ✓ Model: %s\n", usedModel)
 
 		// Print to terminal
 		printPrediction(result)
