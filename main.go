@@ -105,11 +105,24 @@ func main() {
 	historyMode := flag.Bool("history", false, "Fetch historical XAU/USD OHLC candles from Twelve Data (requires TWELVEDATA_API_KEY)")
 	historyInterval := flag.String("history-interval", "15min", "Candle interval for historical data (e.g. 15min, 30min, 1h, 1day)")
 	historySize := flag.Int("history-size", 100, "Number of historical candles to fetch (only with -history)")
+	watchMode := flag.Bool("watch", false, "Watch mode: analyse repeatedly and send results to Telegram (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)")
+	watchInterval := flag.Duration("watch-interval", 3*time.Minute, "How often to analyse and send in watch mode (default 3m)")
+	minConfidence := flag.Float64("min-confidence", 0.75, "Minimum confidence threshold to send Telegram alert (0.0-1.0, default 0.75)")
 	flag.Parse()
 
 	cfg := LoadConfig()
 	if cfg.APIKey == "" {
 		log.Fatal("LLM_API_KEY not set. Copy .env.example to .env and fill in your API key.")
+	}
+
+	// Watch mode: run loop, send to Telegram, exit early
+	if *watchMode {
+		tgCfg := LoadTelegramConfig()
+		if tgCfg.BotToken == "" || tgCfg.ChatID == "" {
+			log.Fatal("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set for -watch mode.")
+		}
+		RunWatchLoop(cfg, tgCfg, *historyInterval, *historySize, *watchInterval, *minConfidence)
+		return
 	}
 
 	// Load historical data

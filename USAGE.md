@@ -5,22 +5,16 @@
 - Go 1.21+
 - Kết nối internet
 - API key LLM (OpenAI, Groq, OpenRouter, Ollama, v.v.)
-- API key Twelve Data (chỉ cần cho chế độ `-history`) — miễn phí
+- API key Twelve Data (chỉ cần cho `-history`) — miễn phí
+- Telegram Bot Token + Chat ID (chỉ cần cho `-watch`) — miễn phí
 
 ---
 
 ## Cài đặt
 
 ```bash
-# 1. Clone hoặc tải source
-cd /path/to/coin
-
-# 2. Tạo file .env
-cp .env.example .env
-
-# 3. Điền thông tin vào .env (xem phần Cấu hình bên dưới)
-
-# 4. Build
+cp .env.example .env   # tạo file cấu hình
+# điền các API key vào .env
 go build -o coinpredict .
 ```
 
@@ -28,67 +22,65 @@ go build -o coinpredict .
 
 ## Cấu hình (.env)
 
+App tự đọc file `.env` khi khởi động — không cần `source .env`.
+Shell environment luôn được ưu tiên hơn (không bị overwrite).
+
 ```env
-# === LLM ===
-LLM_API_KEY=sk-...               # API key của nhà cung cấp LLM (bắt buộc)
+# === LLM (bắt buộc) ===
+LLM_API_KEY=sk-...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 
-# === Dữ liệu lịch sử ===
-TWELVEDATA_API_KEY=...            # Lấy miễn phí tại https://twelvedata.com/pricing
+# === Dữ liệu lịch sử (chỉ cần cho -history) ===
+TWELVEDATA_API_KEY=...       # miễn phí tại https://twelvedata.com/pricing
+
+# === Telegram (chỉ cần cho -watch) ===
+TELEGRAM_BOT_TOKEN=...       # lấy từ @BotFather
+TELEGRAM_CHAT_ID=...         # lấy từ @userinfobot
 ```
 
-### Ví dụ theo từng nhà cung cấp LLM
+### Ví dụ theo nhà cung cấp LLM
 
-**OpenAI:**
+**OpenRouter — model free (khuyên dùng):**
 ```env
-LLM_API_KEY=sk-proj-...
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=sk-or-...
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 ```
 
-**Groq (miễn phí, nhanh):**
+**Groq (nhanh, free tier):**
 ```env
 LLM_API_KEY=gsk_...
 LLM_BASE_URL=https://api.groq.com/openai/v1
 LLM_MODEL=llama-3.3-70b-versatile
 ```
 
-**OpenRouter (nhiều model, có free tier):**
-```env
-LLM_API_KEY=sk-or-...
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_MODEL=google/gemma-3-27b-it:free
-```
-
-**Ollama (chạy local, không cần internet):**
+**Ollama (local, không cần internet cho LLM):**
 ```env
 LLM_API_KEY=ollama
 LLM_BASE_URL=http://localhost:11434/v1
 LLM_MODEL=llama3.1
 ```
 
-> App tự đọc `.env` khi khởi động — không cần `source .env`.
-
 ---
 
 ## Các chế độ sử dụng
 
-### 1. Chế độ lịch sử — khuyên dùng (`-history`)
+### 1. Chế độ lịch sử (`-history`) — khuyên dùng
 
 Lấy nến OHLC lịch sử XAU/USD từ Twelve Data + tự động ghép nến đang hình thành.
 
 ```bash
-# Mặc định: 100 nến 15 phút, chỉ hiện dự đoán LLM
+# 100 nến 15 phút + dự đoán LLM (không biểu đồ)
 ./coinpredict -history
 
-# 100 nến 15 phút + vẽ biểu đồ MT5
+# 100 nến 15 phút + biểu đồ MT5 + dự đoán
 ./coinpredict -history -chart
 
 # 200 nến 1 giờ + biểu đồ
 ./coinpredict -history -history-size 200 -history-interval 1h -chart
 
-# 50 nến 30 phút + biểu đồ, lưu file tên riêng
+# 50 nến 30 phút, lưu biểu đồ tên riêng
 ./coinpredict -history -history-size 50 -history-interval 30min -chart -chart-out gold_30m.html
 ```
 
@@ -99,35 +91,43 @@ Lấy nến OHLC lịch sử XAU/USD từ Twelve Data + tự động ghép nến
 | `-history-interval` | `15min` | Khung thời gian: `1min` `5min` `15min` `30min` `45min` `1h` `2h` `4h` `1day` |
 
 **Lưu ý:**
-- Nến cuối cùng là nến **đang hình thành** (màu vàng trên biểu đồ), lấy giá real-time từ gold-api.com
-- Dữ liệu hiển thị theo **giờ Việt Nam** (ICT, UTC+7)
+- Nến cuối là nến **đang hình thành** (giá real-time từ gold-api.com), màu vàng trên biểu đồ
+- Thời gian hiển thị theo **giờ Việt Nam** (ICT, UTC+7)
 - Cần `TWELVEDATA_API_KEY` trong `.env`
 
 ---
 
-### 2. Chế độ real-time (`-live`)
+### 2. Chế độ watch — Telegram bot (`-watch`)
 
-Thu thập nến OHLC trực tiếp bằng cách poll giá liên tục từ gold-api.com (không cần API key).
+Phân tích tự động định kỳ và gửi kết quả lên Telegram. Chỉ gửi khi độ tin cậy đạt ngưỡng tối thiểu.
 
 ```bash
-# 10 nến × 15 phút, poll mỗi 30 giây (~2.5 giờ)
-./coinpredict -live
+# Mỗi 3 phút, gửi khi tin cậy ≥ 75% (mặc định)
+./coinpredict -watch
 
-# 5 nến × 1 giờ, poll mỗi 1 phút (~5 giờ)
-./coinpredict -live -live-snapshots 5 -live-candle 1h -live-interval 1m
+# Mỗi 5 phút, ngưỡng 80%
+./coinpredict -watch -watch-interval 5m -min-confidence 0.8
 
-# Test nhanh: 3 nến × 30 giây
-./coinpredict -live -live-snapshots 3 -live-candle 30s -live-interval 10s -chart
+# Tùy chỉnh đầy đủ
+./coinpredict -watch -history-size 50 -history-interval 15min -watch-interval 3m -min-confidence 0.75
 ```
 
 | Flag | Mặc định | Mô tả |
 |---|---|---|
-| `-live` | false | Bật chế độ real-time |
-| `-live-snapshots` | 10 | Số nến OHLC cần thu thập |
-| `-live-candle` | `15m` | Thời gian mỗi nến (`15m`, `30m`, `1h`, v.v.) |
-| `-live-interval` | `30s` | Tần suất poll giá trong mỗi nến |
+| `-watch` | false | Bật watch mode |
+| `-watch-interval` | `3m` | Tần suất phân tích (vd: `3m`, `5m`, `10m`) |
+| `-min-confidence` | `0.75` | Ngưỡng tin cậy tối thiểu để gửi Telegram (0.0–1.0) |
 
-**Lưu ý:** Tổng thời gian = `live-snapshots × live-candle`. Chế độ này chỉ nên dùng khi muốn xây nến từ dữ liệu thô, không qua Twelve Data.
+**Cách thiết lập Telegram bot:**
+1. Chat với [@BotFather](https://t.me/botfather) → `/newbot` → nhận `BOT_TOKEN`
+2. Chat với [@userinfobot](https://t.me/userinfobot) → nhận `CHAT_ID`
+3. Điền vào `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+
+Terminal luôn in kết quả mỗi lần phân tích. Telegram chỉ nhận tin khi confidence ≥ ngưỡng.
 
 ---
 
@@ -137,34 +137,30 @@ Thêm `-chart` vào bất kỳ lệnh nào để tạo biểu đồ HTML và t�
 
 ```bash
 ./coinpredict -history -chart
-./coinpredict -history -history-size 200 -history-interval 1h -chart
-./coinpredict -live -live-snapshots 5 -live-candle 30s -live-interval 10s -chart
+./coinpredict -history -history-size 200 -history-interval 1h -chart -chart-out xauusd_h1.html
 ```
-
-Biểu đồ bao gồm:
-- Nền đen, nến **cyan** (tăng) / **đỏ** (giảm) — đúng palette MT5
-- Nến đang hình thành: màu **vàng** + badge `● LIVE` nhấp nháy
-- Crosshair tooltip: O / H / L / C + % thay đổi khi di chuột
-- Label giá cuối bám trục phải
-- Zoom/pan bằng chuột
 
 | Flag | Mặc định | Mô tả |
 |---|---|---|
-| `-chart` | false | Bật vẽ biểu đồ HTML |
+| `-chart` | false | Tạo biểu đồ HTML và mở browser |
 | `-chart-out` | `chart.html` | Đường dẫn file output |
+
+Biểu đồ bao gồm:
+- Nền đen, nến **cyan** (tăng) / **đỏ** (giảm) — palette MT5
+- Nến đang hình thành: màu **vàng** + badge `● LIVE` nhấp nháy
+- Crosshair tooltip: O / H / L / C + % thay đổi
+- Label giá cuối bám trục phải
+- Zoom / pan bằng chuột, full screen
 
 ---
 
 ### 4. Từ file JSON (`-data`)
 
-Dùng file JSON chứa dữ liệu OHLC tự chuẩn bị.
-
 ```bash
-./coinpredict -data my_data.json
 ./coinpredict -data my_data.json -chart
 ```
 
-**Định dạng file:**
+**Định dạng:**
 ```json
 [
   {"date": "2026-11-01", "open": 4020.0, "high": 4045.0, "low": 4015.0, "close": 4038.0},
@@ -174,25 +170,13 @@ Dùng file JSON chứa dữ liệu OHLC tự chuẩn bị.
 
 ---
 
-### 5. Chế độ tương tác (`-i`)
+### 5. Các chế độ khác
 
-Dán JSON trực tiếp vào terminal.
-
-```bash
-./coinpredict -i
-# Dán JSON array, nhấn Enter, rồi Ctrl+D để kết thúc
-```
-
----
-
-### 6. Demo (không flag)
-
-Chạy với dữ liệu mẫu tĩnh — không cần Twelve Data, không cần internet (ngoài LLM).
-
-```bash
-./coinpredict
-./coinpredict -chart
-```
+| Lệnh | Mô tả |
+|---|---|
+| `./coinpredict` | Demo với dữ liệu mẫu tĩnh |
+| `./coinpredict -i` | Dán JSON từ stdin, nhấn Ctrl+D để kết thúc |
+| `./coinpredict -live` | Thu thập nến OHLC real-time bằng polling |
 
 ---
 
@@ -202,15 +186,21 @@ Chạy với dữ liệu mẫu tĩnh — không cần Twelve Data, không cần 
 ════════════════════════════════════════════
        GOLD/USD PRICE PREDICTION
 ════════════════════════════════════════════
-Direction        : UP
-Confidence       : 72%
-Predicted Price  : 4048.50 USD
-Support Level    : 4040.00 USD
-Resistance Level : 4050.00 USD
-──────────────────────────────────────────────
+Direction        : DOWN
+Confidence       : 65%
+Predicted Price  : 4045.00 USD
+Support Level    : 4037.00 USD
+Resistance Level : 4050.50 USD
+────────────────────────────────────────────
+Trade Setup      : SELL
+Entry            : 4049.50 USD
+Stop Loss        : 4052.50 USD
+Take Profit 1    : 4042.00 USD
+Take Profit 2    : 4037.00 USD
+Risk/Reward      : 1 : 2.50
+────────────────────────────────────────────
 Analysis:
-Price bounced off strong support at 4040.00 with five consecutive
-higher closes, shifting short-term momentum upward...
+Price collapsed from 4106 to 4036...
 ════════════════════════════════════════════
 ⚠️  DISCLAIMER: This is AI-generated analysis, not financial advice.
 ```
@@ -220,29 +210,29 @@ higher closes, shifting short-term momentum upward...
 | Direction | `UP` tăng / `DOWN` giảm / `SIDEWAYS` đi ngang |
 | Confidence | Độ tin cậy 0–100% |
 | Predicted Price | Giá dự đoán kỳ tiếp theo (USD/oz) |
-| Support Level | Mức hỗ trợ gần nhất |
-| Resistance Level | Mức kháng cự gần nhất |
-| Analysis | Phân tích ngắn gọn từ LLM |
+| Support / Resistance | Mức hỗ trợ / kháng cự gần nhất |
+| Trade Setup | `BUY` / `SELL` / `WAIT` |
+| Entry | Giá vào lệnh đề xuất |
+| Stop Loss | Mức dừng lỗ |
+| Take Profit 1/2 | Mục tiêu lợi nhuận 1 (thận trọng) và 2 (mở rộng) |
+| Risk/Reward | Tỷ lệ rủi ro/lợi nhuận đến TP1 |
 
 ---
 
 ## Lệnh hay dùng
 
 ```bash
-# Lệnh chuẩn hàng ngày: 100 nến 15 phút + biểu đồ + dự đoán
+# Phân tích + biểu đồ ngay lập tức
 ./coinpredict -history -history-size 100 -history-interval 15min -chart
 
-# Xem xu hướng ngắn hạn hơn (30 nến gần nhất)
-./coinpredict -history -history-size 30 -history-interval 15min -chart
-
-# Phân tích khung 1 giờ
-./coinpredict -history -history-size 100 -history-interval 1h -chart
-
-# Chỉ xem dự đoán, không mở browser
+# Chỉ xem dự đoán + trade setup, không mở browser
 ./coinpredict -history -history-size 100 -history-interval 15min
 
-# Lưu biểu đồ vào file tên riêng
-./coinpredict -history -chart -chart-out xauusd_m15.html
+# Chạy bot Telegram tự động mỗi 3 phút
+./coinpredict -watch -history-size 50 -history-interval 15min
+
+# Phân tích khung H1
+./coinpredict -history -history-size 100 -history-interval 1h -chart
 ```
 
 ---
@@ -251,17 +241,18 @@ higher closes, shifting short-term momentum upward...
 
 | Lỗi | Nguyên nhân | Cách xử lý |
 |---|---|---|
-| `LLM_API_KEY not set` | Chưa có file `.env` hoặc thiếu key | Tạo `.env` từ `.env.example`, điền key |
+| `LLM_API_KEY not set` | Chưa có `.env` hoặc thiếu key | Tạo `.env` từ `.env.example` |
 | `TWELVEDATA_API_KEY not set` | Thiếu key Twelve Data | Đăng ký miễn phí tại twelvedata.com |
-| `Prediction failed: empty response` | Model free hết token hoặc giới hạn | Thử model khác hoặc giảm `-history-size` |
-| `Twelve Data error: ...` | Key sai, hết credit (>800/ngày) | Kiểm tra key, chờ reset lúc 00:00 UTC |
-| `gold API returned status 429` | Rate limit gold-api.com | Tăng `-live-interval` lên ≥30s |
+| `TELEGRAM_BOT_TOKEN ... must be set` | Thiếu config Telegram | Điền `TELEGRAM_BOT_TOKEN` và `TELEGRAM_CHAT_ID` vào `.env` |
+| `empty response from model` | Model free hết token | Đổi model hoặc giảm `-history-size` |
+| `429 rate-limited upstream` | Model Google/shared bị giới hạn | Chờ vài phút hoặc đổi sang `nvidia/nemotron-3-ultra-550b-a55b:free` |
+| `Twelve Data error` | Key sai, hết 800 credit/ngày | Kiểm tra key, chờ reset 00:00 UTC |
 
 ---
 
 ## Lưu ý
 
 - Dữ liệu lịch sử Twelve Data hiển thị theo **giờ Việt Nam** (ICT, UTC+7)
-- LLM chỉ nhận **30 nến gần nhất** để phân tích (tránh vượt token limit của model free)
-- Biểu đồ hiển thị **toàn bộ** số nến đã lấy (không giới hạn 30)
+- LLM chỉ nhận **30 nến gần nhất** để phân tích (tránh vượt token limit)
+- Biểu đồ hiển thị **toàn bộ** số nến đã lấy
 - Đây là phân tích do AI tạo ra, **không phải lời khuyên tài chính**
