@@ -52,3 +52,9 @@ go build -o coinpredict .
 | `sample_data.json` | Dữ liệu mẫu để test với `-data` |
 
 > Đây là phân tích do AI tạo ra, **không phải lời khuyên tài chính**.
+
+```bash
+./coinpredict -history -history-size 50 -history-interval 15min -chart -min-confidence 0.0
+
+./coinpredict -watch -history-size 50 -history-interval 15min -watch-interval 3m -min-confidence 0.75
+```
