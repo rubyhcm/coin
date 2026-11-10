@@ -26,11 +26,12 @@ func NewLLMClient(cfg Config) *LLMClient {
 
 // PredictWithFallback tries each provider in order and returns the first success.
 // If a provider fails (rate limit, quota, error), it automatically switches to the next.
-func PredictWithFallback(configs []Config, history []PriceRecord) (PredictionResult, string, error) {
+// maxCandles controls how many recent candles are sent in the prompt (0 = default 30).
+func PredictWithFallback(configs []Config, history []PriceRecord, maxCandles int) (PredictionResult, string, error) {
 	var lastErr error
 	for _, cfg := range configs {
 		client := NewLLMClient(cfg)
-		result, err := client.Predict(history)
+		result, err := client.Predict(history, maxCandles)
 		if err == nil {
 			return result, cfg.Model, nil
 		}
@@ -65,8 +66,9 @@ type chatResponse struct {
 }
 
 // Predict sends historical price data to the LLM and returns a structured prediction.
-func (c *LLMClient) Predict(history []PriceRecord) (PredictionResult, error) {
-	prompt := buildPrompt(history)
+// maxCandles controls how many recent candles are included in the prompt (0 = default 30).
+func (c *LLMClient) Predict(history []PriceRecord, maxCandles int) (PredictionResult, error) {
+	prompt := buildPrompt(history, maxCandles)
 
 	reqBody := chatRequest{
 		Model: c.cfg.Model,
@@ -180,9 +182,12 @@ func (c *LLMClient) Predict(history []PriceRecord) (PredictionResult, error) {
 }
 
 // buildPrompt constructs the user prompt with historical price context.
-// Only the most recent 30 candles are sent to keep the prompt within free-tier token limits.
-func buildPrompt(history []PriceRecord) string {
-	const maxCandles = 30
+// maxCandles controls how many recent candles are sent to stay within token limits.
+// Free tier guidance: ~80 tokens/candle → 30=2.4k, 100=8k, 200=16k tokens.
+func buildPrompt(history []PriceRecord, maxCandles int) string {
+	if maxCandles <= 0 {
+		maxCandles = 30
+	}
 	if len(history) > maxCandles {
 		history = history[len(history)-maxCandles:]
 	}

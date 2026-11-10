@@ -57,4 +57,6 @@ go build -o coinpredict .
 ./coinpredict -history -history-size 50 -history-interval 15min -chart -min-confidence 0.0
 
 ./coinpredict -watch -history-size 50 -history-interval 15min -watch-interval 3m -min-confidence 0.75
+
+➜  ./coinpredict -watch -history-size 90 -history-interval 15min -watch-interval 3m -min-confidence 0.75 -llm-candles 90
 ```

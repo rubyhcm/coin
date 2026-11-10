@@ -95,7 +95,11 @@ func FormatTelegramMessage(r PredictionResult, currentPrice float64, interval st
 
 	if ts.Type != "" {
 		sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━\n")
-		sb.WriteString(fmt.Sprintf("%s <b>Trade Setup: %s</b>\n", tradeIcon, ts.Type))
+		label := ts.Type
+		if ts.Type == "BUY" || ts.Type == "SELL" {
+			label = "Execution " + ts.Type
+		}
+		sb.WriteString(fmt.Sprintf("%s <b>Trade Setup: %s</b>\n", tradeIcon, label))
 		if ts.Type != "WAIT" {
 			sb.WriteString(fmt.Sprintf("  📌 Entry:   <code>%.2f</code>\n", ts.Entry))
 			sb.WriteString(fmt.Sprintf("  🛑 SL:      <code>%.2f</code>\n", ts.StopLoss))
@@ -142,9 +146,9 @@ func intervalLabel(interval string) string {
 
 // RunWatchLoop fetches data + predicts + sends Telegram message every `interval`.
 // Only sends if confidence >= minConfidence. Runs until interrupted (Ctrl+C).
-func RunWatchLoop(configs []Config, tgCfg TelegramConfig, histInterval string, histSize int, watchInterval time.Duration, minConfidence float64) {
+func RunWatchLoop(configs []Config, tgCfg TelegramConfig, histInterval string, histSize int, watchInterval time.Duration, minConfidence float64, llmCandles int) {
 	fmt.Printf("=== WATCH MODE: phân tích mỗi %v, gửi Telegram khi tin cậy ≥ %.0f%% ===\n", watchInterval, minConfidence*100)
-	fmt.Printf("    Interval nến: %s | Số nến: %d\n\n", histInterval, histSize)
+	fmt.Printf("    Interval nến: %s | Số nến fetch: %d | Số nến gửi LLM: %d\n\n", histInterval, histSize, llmCandles)
 
 	tick := time.NewTicker(watchInterval)
 	defer tick.Stop()
@@ -170,7 +174,7 @@ func RunWatchLoop(configs []Config, tgCfg TelegramConfig, histInterval string, h
 		currentPrice := records[len(records)-1].Close
 
 		// Predict with automatic fallback
-		result, usedModel, err := PredictWithFallback(configs, records)
+		result, usedModel, err := PredictWithFallback(configs, records, llmCandles)
 		if err != nil {
 			fmt.Printf("  ❌ LLM lỗi: %v\n", err)
 			return

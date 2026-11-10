@@ -59,8 +59,33 @@ func LoadConfig() Config {
 	}
 }
 
-// providerPresets maps provider name → (baseURL, model, envKeyName).
-// envKeyName is the env var that holds the API key for that provider.
+// providerModels maps provider name → danh sách model thử theo thứ tự.
+// Khi model đầu hết quota/lỗi, tự động thử model tiếp theo trong cùng provider.
+var providerModels = map[string][]string{
+	"openrouter": {
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
+		"google/gemma-4-31b-it:free",
+		"nvidia/nemotron-3.5-lightning:free",
+	},
+	"groq": {
+		"qwen/qwen3.8-27b",
+		"openai/gpt-oss-20b",
+	},
+	"gemini": {
+		"gemini-3.8-flash",
+		"gemini-flash-latest",
+		"gemini-3.5-flash",
+	},
+}
+
+// providerMeta maps provider name → (baseURL, envKeyName).
+var providerMeta = map[string][2]string{
+	"openrouter": {"https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"},
+	"groq":       {"https://api.groq.com/openai/v1", "GROQ_API_KEY"},
+	"gemini":     {"https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY"},
+}
+
+// providerPresets maps provider name → (baseURL, model, envKeyName) — kept for applyProvider().
 var providerPresets = map[string][3]string{
 	"openrouter": {
 		"https://openrouter.ai/api/v1",
@@ -74,7 +99,7 @@ var providerPresets = map[string][3]string{
 	},
 	"gemini": {
 		"https://generativelanguage.googleapis.com/v1beta/openai/",
-		"gemini-2.5-flash",
+		"gemini-3.8-flash",
 		"GEMINI_API_KEY",
 	},
 }
@@ -100,13 +125,14 @@ func applyProvider(cfg Config, provider string) Config {
 var providerOrder = []string{"openrouter", "groq", "gemini"}
 
 // buildFallbackChain returns an ordered list of Configs to try.
-// If -provider is set, that provider goes first, then the rest follow.
-// Providers with no API key are excluded.
+// Each provider expands into multiple Configs — one per model — so when a model
+// hits rate limits the next model in the same provider is tried automatically.
+// If -provider is set, that provider's models go first, then the rest follow.
+// Providers with no API key are skipped entirely.
 func buildFallbackChain(defaultCfg Config, firstProvider string) []Config {
-	// Build a base key from default cfg (LLM_API_KEY) for the default provider
 	var chain []Config
 
-	// Determine the ordered list: firstProvider first, then the rest
+	// Determine provider order: firstProvider first, then the rest
 	order := providerOrder
 	if firstProvider != "" {
 		rest := make([]string, 0, len(providerOrder))
@@ -119,22 +145,25 @@ func buildFallbackChain(defaultCfg Config, firstProvider string) []Config {
 	}
 
 	for _, name := range order {
-		preset := providerPresets[name]
-		key := os.Getenv(preset[2])
+		meta := providerMeta[name]
+		key := os.Getenv(meta[1])
 		if key == "" {
 			key = defaultCfg.APIKey // fallback to LLM_API_KEY
 		}
 		if key == "" {
 			continue // no key at all — skip this provider
 		}
-		chain = append(chain, Config{
-			APIKey:  key,
-			BaseURL: preset[0],
-			Model:   preset[1],
-		})
+		// Expand each model as a separate Config entry
+		for _, model := range providerModels[name] {
+			chain = append(chain, Config{
+				APIKey:  key,
+				BaseURL: meta[0],
+				Model:   model,
+			})
+		}
 	}
 
-	// If chain is empty or user uses custom LLM_BASE_URL, prepend the default cfg
+	// If chain is empty (no preset provider matched), use the default cfg as-is
 	if len(chain) == 0 {
 		chain = append(chain, defaultCfg)
 	}
@@ -192,6 +221,7 @@ func main() {
 	watchInterval := flag.Duration("watch-interval", 3*time.Minute, "How often to analyse and send in watch mode (default 3m)")
 	minConfidence := flag.Float64("min-confidence", 0.75, "Minimum confidence threshold to send Telegram alert (0.0-1.0, default 0.75)")
 	provider := flag.String("provider", "", "LLM provider override: openrouter | groq | gemini (overrides LLM_BASE_URL and LLM_MODEL)")
+	llmCandles := flag.Int("llm-candles", 30, "Number of candles to send to LLM for analysis (default 30, increase for more context but uses more tokens)")
 	flag.Parse()
 
 	cfg := LoadConfig()
@@ -211,7 +241,7 @@ func main() {
 		if tgCfg.BotToken == "" || tgCfg.ChatID == "" {
 			log.Fatal("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set for -watch mode.")
 		}
-		RunWatchLoop(fallbackChain, tgCfg, *historyInterval, *historySize, *watchInterval, *minConfidence)
+		RunWatchLoop(fallbackChain, tgCfg, *historyInterval, *historySize, *watchInterval, *minConfidence, *llmCandles)
 		return
 	}
 
@@ -274,7 +304,7 @@ func main() {
 	fmt.Println("Analyzing with LLM...")
 	fmt.Println()
 
-	result, usedModel, err := PredictWithFallback(fallbackChain, history)
+	result, usedModel, err := PredictWithFallback(fallbackChain, history, *llmCandles)
 	if err != nil {
 		log.Fatalf("Prediction failed: %v", err)
 	}
