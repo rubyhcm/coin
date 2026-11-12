@@ -75,10 +75,10 @@ func (c *LLMClient) Predict(history []PriceRecord, maxCandles int) (PredictionRe
 		Messages: []chatMessage{
 			{
 				Role: "system",
-				Content: "You are an expert gold (XAU/USD) trading analyst. " +
-					"Analyze the provided OHLC candlestick data and return a structured trade recommendation. " +
-					"Identify trend direction, key support/resistance levels, and provide a concrete trade setup " +
-					"with entry price, stop loss, and two take profit targets based on technical analysis. " +
+				Content: "You are a professional XAU/USD price action trader. " +
+					"You identify high-probability PENDING LIMIT ORDER setups at key support/resistance levels — never market orders at current price. " +
+					"You wait for price to come to your level, not chase it. " +
+					"If no valid setup exists, you say WAIT. " +
 					"Always respond with valid JSON only, no markdown formatting.",
 			},
 			{
@@ -205,20 +205,32 @@ func buildPrompt(history []PriceRecord, maxCandles int) string {
 			r.Date, r.Open, r.High, r.Low, r.Close))
 	}
 	sb.WriteString(fmt.Sprintf("\nCurrent price: %.2f USD\n\n", lastClose))
+	sb.WriteString(`You are a professional XAU/USD trader using price action and S/R analysis.
+Your task is to identify the NEXT high-probability trade setup — not based on current price, but based on where price is LIKELY TO REACH and react.
+
+Rules:
+1. Do NOT set entry at current price. Entry must be a PENDING LIMIT ORDER at a key S/R level price has not yet reached (or is pulling back to).
+2. If price is in the middle of a range with no clear S/R nearby, set type to "WAIT".
+3. BUY limit: entry BELOW current price at support. SELL limit: entry ABOVE current price at resistance. Exception: breakout retest entries are allowed at current S/R.
+4. Stop loss must be placed BEYOND the S/R level (not just a fixed pip distance).
+5. Take profits must target the next meaningful S/R level.
+6. Risk/Reward must be at least 1.5 to recommend BUY or SELL. Otherwise use WAIT.
+
+`)
 	sb.WriteString("Respond with ONLY this JSON, no markdown, no extra text:\n")
 	sb.WriteString(`{`)
 	sb.WriteString(`"direction":"up"|"down"|"sideways",`)
 	sb.WriteString(`"confidence":<0.0-1.0>,`)
-	sb.WriteString(`"predicted_price":<next period close>,`)
-	sb.WriteString(`"reasoning":"<2-3 sentences citing trend, S/R, momentum>",`)
-	sb.WriteString(`"key_levels":{"support":<number>,"resistance":<number>},`)
+	sb.WriteString(`"predicted_price":<price target for next 1-3 periods>,`)
+	sb.WriteString(`"reasoning":"<cite specific S/R levels, trend structure, and why this entry zone is valid>",`)
+	sb.WriteString(`"key_levels":{"support":<nearest support below current price>,"resistance":<nearest resistance above current price>},`)
 	sb.WriteString(`"trade_setup":{`)
 	sb.WriteString(`"type":"BUY"|"SELL"|"WAIT",`)
-	sb.WriteString(`"entry":<best entry price>,`)
-	sb.WriteString(`"stop_loss":<stop loss price beyond nearest S/R>,`)
-	sb.WriteString(`"take_profit_1":<conservative TP at nearest S/R>,`)
-	sb.WriteString(`"take_profit_2":<extended TP at next S/R>,`)
-	sb.WriteString(`"risk_reward":<R:R ratio to TP1 as decimal e.g. 2.0>`)
+	sb.WriteString(`"entry":<pending limit order price — NOT current price>,`)
+	sb.WriteString(`"stop_loss":<beyond S/R, not arbitrary>,`)
+	sb.WriteString(`"take_profit_1":<first S/R target>,`)
+	sb.WriteString(`"take_profit_2":<second S/R target>,`)
+	sb.WriteString(`"risk_reward":<R:R to TP1, must be >= 1.5 for BUY/SELL>`)
 	sb.WriteString(`}}`)
 
 	return sb.String()

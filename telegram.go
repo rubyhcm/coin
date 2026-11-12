@@ -96,8 +96,10 @@ func FormatTelegramMessage(r PredictionResult, currentPrice float64, interval st
 	if ts.Type != "" {
 		sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━\n")
 		label := ts.Type
-		if ts.Type == "BUY" || ts.Type == "SELL" {
-			label = "Execution " + ts.Type
+		if ts.Type == "BUY" {
+			label = "Limit Order BUY"
+		} else if ts.Type == "SELL" {
+			label = "Limit Order SELL"
 		}
 		sb.WriteString(fmt.Sprintf("%s <b>Trade Setup: %s</b>\n", tradeIcon, label))
 		if ts.Type != "WAIT" {
